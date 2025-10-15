@@ -1,113 +1,50 @@
-name: Build APK
+name: Build Android APK
 on:
   workflow_dispatch:
-
-env:
-  ZIPNAME: VampireDiariesEngine_Standalone_AndroidStudio_Project (1).zip
- 
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v3
         with:
-          distribution: temurin
+          distribution: 'temurin'
           java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android components
-        shell: bash
+      - name: Prepare project
         run: |
-          sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
-          yes | sdkmanager --licenses
-
-      - name: Unzip project
-        shell: bash
-        run: |
-          set -e
+          ZIP_FILE="VampireDiariesEngine_Standalone_AndroidStudio_Project (1).zip"
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "::error::ZIP file '$ZIP_FILE' not found in repo root."
+            exit 1
+          fi
+          mkdir project
+          unzip -q "$ZIP_FILE" -d project
+          cd project
+          chmod +x gradlew || true
+          echo "Project contents:"
           ls -la
-          if [ ! -f "$ZIP_NAME" ]; then
-            echo "::error::ZIP '$ZIP_NAME' not found in repo root."; exit 1
-          fi
-          rm -rf ws
-          mkdir ws
-          unzip -q "$ZIP_NAME" -d ws
-          echo "Unzipped tree (first 3 levels):"
-          find ws -maxdepth 3 -print
 
-          # Pick project root
-          # If there is exactly one folder at the top, use it; else use ws/
-          TOP_DIRS=$(find ws -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
-          if [ "$TOP_DIRS" = "1" ]; then
-            ROOT_DIR=$(find ws -mindepth 1 -maxdepth 1 -type d | head -n1)
+      - name: Build Debug APK
+        run: |
+          cd project
+          if [ -f "./gradlew" ]; then
+            ./gradlew assembleDebug
           else
-            ROOT_DIR="ws"
+            echo "::error::gradlew not found, can't build project."
+            exit 2
           fi
-
-          # Prefer folder containing gradlew
-          PROJ_DIR=$(find "$ROOT_DIR" -maxdepth 3 -type f -name gradlew -printf '%h\n' | head -n1 || true)
-
-          # If no gradlew but there is an app/ folder, build a minimal root
-          if [ -z "$PROJ_DIR" ] && [ -d "$ROOT_DIR/app" ]; then
-            PROJ_DIR="$ROOT_DIR"
-            cat > "$PROJ_DIR/settings.gradle" <<'EOF'
-pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-dependencyResolutionManagement {
-  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
-  repositories { google(); mavenCentral() }
-}
-rootProject.name = "VampireDiariesEngine"
-include(":app")
-EOF
-            cat > "$PROJ_DIR/build.gradle" <<'EOF'
-allprojects { repositories { google(); mavenCentral() } }
-EOF
-            cat > "$PROJ_DIR/gradle.properties" <<'EOF'
-org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
-android.useAndroidX=true
-EOF
-          fi
-
-          # Fallback to folder containing settings.gradle if still unknown
-          if [ -z "$PROJ_DIR" ]; then
-            PROJ_DIR=$(find "$ROOT_DIR" -maxdepth 3 -type f -name 'settings.gradle*' -printf '%h\n' | head -n1 || true)
-          fi
-
-          if [ -z "$PROJ_DIR" ]; then
-            echo "::error::Could not determine project directory (no gradlew, no app/, no settings.gradle)."; exit 2
-          fi
-
-          echo "Using project dir: $PROJ_DIR"
-          echo "PROJ_DIR=$PROJ_DIR" >> $GITHUB_ENV
-
-      - name: Ensure Gradle wrapper
-        shell: bash
-        run: |
-          cd "$PROJ_DIR"
-          if [ ! -f ./gradlew ]; then
-            echo "Creating Gradle wrapper…"
-            curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o g.zip
-            unzip -q g.zip -d "${RUNNER_TEMP}"
-            "${RUNNER_TEMP}/gradle-8.7/bin/gradle" wrapper --gradle-version 8.7
-          fi
-          chmod +x ./gradlew
-          ./gradlew --version
-
-      - name: Build debug APK
-        shell: bash
-        run: |
-          cd "$PROJ_DIR"
-          ./gradlew --no-daemon --stacktrace assembleDebug
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: app-debug.apk
-          path: ws/**/build/outputs/apk/**/**/*.apk
+          path: project/**/build/outputs/apk/debug/*.apk
