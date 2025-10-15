@@ -1,7 +1,9 @@
 name: Build APK
-
 on:
   workflow_dispatch:
+
+env:
+  ZIP_NAME: "VampireDiariesEngine_Standalone_AndroidStudio_Project (1).zip"
 
 jobs:
   build:
@@ -25,43 +27,64 @@ jobs:
           sdkmanager --sdk_root="${ANDROID_SDK_ROOT}" "platform-tools" "platforms;android-34" "build-tools;34.0.0"
           yes | sdkmanager --licenses
 
-      - name: Unzip newest project
-        id: unzip
+      - name: Unzip project
         shell: bash
         run: |
           set -e
-          ZIP="$(find . -maxdepth 1 -type f -name '*.zip' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2- || true)"
-          if [ -z "$ZIP" ]; then
-            echo "::error::No ZIP found in repo root"; exit 1
+          if [ ! -f "$ZIP_NAME" ]; then
+            echo "::error::ZIP '$ZIP_NAME' not found in repo root"; exit 1
           fi
-          echo "Using ZIP: $ZIP"
           rm -rf ws && mkdir ws
-          unzip -q "$ZIP" -d ws
-          echo "--- first levels ---"
-          find ws -maxdepth 3 -type d -print
+          unzip -q "$ZIP_NAME" -d ws
+          echo "::group::unzipped tree (first 3 levels)"; find ws -maxdepth 3 -print; echo "::endgroup::"
 
-          # try to locate gradlew; else detect app/
-          PROJ="$(find ws -type f -name gradlew -printf '%h\n' | head -n1 || true)"
-          if [ -z "$PROJ" ] && [ -d ws/app ]; then
-            PROJ="ws"
-            printf "pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }\n" > ws/settings.gradle
-            printf "dependencyResolutionManagement { repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS); repositories { google(); mavenCentral() } }\n" >> ws/settings.gradle
-            printf "rootProject.name = \"VampireDiariesEngine\"\ninclude(\":app\")\n" >> ws/settings.gradle
-            printf "allprojects { repositories { google(); mavenCentral() } }\n" > ws/build.gradle
-            printf "org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8\nandroid.useAndroidX=true\n" > ws/gradle.properties
+          # If the zip has a single top folder, use it; else use ws
+          if [ "$(find ws -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "1" ]; then
+            ROOT_DIR="$(find ws -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          else
+            ROOT_DIR="ws"
           fi
-          if [ -z "$PROJ" ]; then
-            PROJ="$(find ws -type f -name 'settings.gradle*' -printf '%h\n' | head -n1 || true)"
+
+          # Prefer folder that has gradlew
+          PROJ_DIR="$(find "$ROOT_DIR" -maxdepth 3 -type f -name gradlew -printf '%h\n' | head -n1 || true)"
+
+          # If no gradlew but there's app/, build a minimal root
+          if [ -z "$PROJ_DIR" ] && [ -d "$ROOT_DIR/app" ]; then
+            PROJ_DIR="$ROOT_DIR"
+            cat > "$PROJ_DIR/settings.gradle" <<'EOF'
+pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories { google(); mavenCentral() }
+}
+rootProject.name = "VampireDiariesEngine"
+include(":app")
+EOF
+            cat > "$PROJ_DIR/build.gradle" <<'EOF'
+allprojects { repositories { google(); mavenCentral() } }
+EOF
+            cat > "$PROJ_DIR/gradle.properties" <<'EOF'
+org.gradle.jvmargs=-Xmx2g -Dfile.encoding=UTF-8
+android.useAndroidX=true
+EOF
           fi
-          if [ -z "$PROJ" ]; then
-            echo "::error::Project dir not found after unzip"; exit 2
+
+          # Fallback to a settings.gradle location if needed
+          if [ -z "$PROJ_DIR" ]; then
+            PROJ_DIR="$(find "$ROOT_DIR" -maxdepth 3 -type f -name 'settings.gradle*' -printf '%h\n' | head -n1 || true)"
           fi
-          echo "PROJ=$PROJ" >> $GITHUB_ENV
+
+          if [ -z "$PROJ_DIR" ]; then
+            echo "::error::Could not determine project directory (no gradlew, no app/, no settings.gradle)"; exit 2
+          fi
+
+          echo "PROJ_DIR=$PROJ_DIR" >> $GITHUB_ENV
+          echo "Using project dir: $PROJ_DIR"
 
       - name: Ensure Gradle wrapper
         shell: bash
         run: |
-          cd "$PROJ"
+          cd "$PROJ_DIR"
           if [ ! -f ./gradlew ]; then
             echo "Creating Gradle wrapper…"
             curl -sL https://services.gradle.org/distributions/gradle-8.7-bin.zip -o g.zip
@@ -74,22 +97,11 @@ jobs:
       - name: Build debug APK
         shell: bash
         run: |
-          cd "$PROJ"
+          cd "$PROJ_DIR"
           ./gradlew --no-daemon --stacktrace assembleDebug
-
-      - name: Find APK path
-        id: findapk
-        shell: bash
-        run: |
-          APK="$(find "$PROJ" -type f -path '*/build/outputs/apk/*/*.apk' | head -n1 || true)"
-          if [ -z "$APK" ]; then
-            echo "::error::APK not found under outputs/apk"; exit 3
-          fi
-          echo "APK=$APK" >> $GITHUB_ENV
-          echo "Found: $APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: app-debug.apk
-          path: ${{ env.APK }}
+          path: ${{ env.PROJ_DIR }}/**/build/outputs/apk/**/**/*.apk
