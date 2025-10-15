@@ -3,7 +3,8 @@ on:
   workflow_dispatch:
 
 env:
-  ZIP_NAME: "VampireDiariesEngine_Standalone_AndroidStudio_Project (1).zip"
+  ZIPNAME: VampireDiariesEngine_Standalone_AndroidStudio_Project (1).zip
+ 
 
 jobs:
   build:
@@ -16,7 +17,7 @@ jobs:
         uses: actions/setup-java@v3
         with:
           distribution: temurin
-          java-version: 17
+          java-version: '17'
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -31,24 +32,29 @@ jobs:
         shell: bash
         run: |
           set -e
+          ls -la
           if [ ! -f "$ZIP_NAME" ]; then
-            echo "::error::ZIP '$ZIP_NAME' not found in repo root"; exit 1
+            echo "::error::ZIP '$ZIP_NAME' not found in repo root."; exit 1
           fi
-          rm -rf ws && mkdir ws
+          rm -rf ws
+          mkdir ws
           unzip -q "$ZIP_NAME" -d ws
-          echo "::group::unzipped tree (first 3 levels)"; find ws -maxdepth 3 -print; echo "::endgroup::"
+          echo "Unzipped tree (first 3 levels):"
+          find ws -maxdepth 3 -print
 
-          # If the zip has a single top folder, use it; else use ws
-          if [ "$(find ws -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "1" ]; then
-            ROOT_DIR="$(find ws -mindepth 1 -maxdepth 1 -type d | head -n1)"
+          # Pick project root
+          # If there is exactly one folder at the top, use it; else use ws/
+          TOP_DIRS=$(find ws -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
+          if [ "$TOP_DIRS" = "1" ]; then
+            ROOT_DIR=$(find ws -mindepth 1 -maxdepth 1 -type d | head -n1)
           else
             ROOT_DIR="ws"
           fi
 
-          # Prefer folder that has gradlew
-          PROJ_DIR="$(find "$ROOT_DIR" -maxdepth 3 -type f -name gradlew -printf '%h\n' | head -n1 || true)"
+          # Prefer folder containing gradlew
+          PROJ_DIR=$(find "$ROOT_DIR" -maxdepth 3 -type f -name gradlew -printf '%h\n' | head -n1 || true)
 
-          # If no gradlew but there's app/, build a minimal root
+          # If no gradlew but there is an app/ folder, build a minimal root
           if [ -z "$PROJ_DIR" ] && [ -d "$ROOT_DIR/app" ]; then
             PROJ_DIR="$ROOT_DIR"
             cat > "$PROJ_DIR/settings.gradle" <<'EOF'
@@ -69,17 +75,17 @@ android.useAndroidX=true
 EOF
           fi
 
-          # Fallback to a settings.gradle location if needed
+          # Fallback to folder containing settings.gradle if still unknown
           if [ -z "$PROJ_DIR" ]; then
-            PROJ_DIR="$(find "$ROOT_DIR" -maxdepth 3 -type f -name 'settings.gradle*' -printf '%h\n' | head -n1 || true)"
+            PROJ_DIR=$(find "$ROOT_DIR" -maxdepth 3 -type f -name 'settings.gradle*' -printf '%h\n' | head -n1 || true)
           fi
 
           if [ -z "$PROJ_DIR" ]; then
-            echo "::error::Could not determine project directory (no gradlew, no app/, no settings.gradle)"; exit 2
+            echo "::error::Could not determine project directory (no gradlew, no app/, no settings.gradle)."; exit 2
           fi
 
-          echo "PROJ_DIR=$PROJ_DIR" >> $GITHUB_ENV
           echo "Using project dir: $PROJ_DIR"
+          echo "PROJ_DIR=$PROJ_DIR" >> $GITHUB_ENV
 
       - name: Ensure Gradle wrapper
         shell: bash
@@ -104,4 +110,4 @@ EOF
         uses: actions/upload-artifact@v4
         with:
           name: app-debug.apk
-          path: ${{ env.PROJ_DIR }}/**/build/outputs/apk/**/**/*.apk
+          path: ws/**/build/outputs/apk/**/**/*.apk
